@@ -1,0 +1,762 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <meta http-equiv="Content-Type" content="text/html; charset=UTF-8">
+  <title>将棋</title>
+  <link rel="stylesheet"
+  href="https://maxcdn.bootstrapcdn.com/bootstrap/3.3.5/css/bootstrap.min.css">
+  <link rel="stylesheet" type="text/css" href="./css/syogi.css">
+  <script src="https://ajax.googleapis.com/ajax/libs/jquery/1.11.3/jquery.min.js"></script>
+  <!-- Socket.IOクライアントライブラリの読込み -->
+  <script type="text/javascript" src="http://localhost:2222/socket.io/socket.io.js"></script>
+  <script type="text/javascript">
+  var socket;
+  (function(){
+    socket = io.connect("http://localhost:2222");
+  })();
+  </script>
+</head>
+<body>
+  <div id="back"></div>
+  <div class="container">
+    <h1>将棋</h1>
+
+    <!-- メッセージ表示部分 -->
+    <div id="error_mess"></div>
+
+    <!-- 成るかどうか？ -->
+    <div id="mess" class="message">
+      成りますか?<br>
+      <button type='button' id='yes_button'>はい</button>
+      <button type='button' id='no_button'>いいえ</button>
+    </div>
+
+    <!-- 勝負終了時の処理 -->
+    <div id="end_mess" class="message"></div>
+
+    <!-- turn表示部分 -->
+    <div id="turn"></div>
+
+    <!-- 相手の取った駒の表示部分 -->
+    <div id="enemy_koma"></div>
+
+    <!-- 盤面表示部分 -->
+    <div id="board_area">
+      <div id="board">
+      </div>
+    </div>
+
+    <!-- 自分の取った駒の表示部分 -->
+    <div id="my_koma"></div>
+
+    <!-- 部屋一覧の表示 -->
+    <p id="room_list"></p>
+
+    <!-- 駒を指すときの効果音 -->
+    <audio id="koma_sound" preload="auto">
+      <source src="./sound/koma.mp3">
+      </audio>
+
+
+      <!-- ルーム作成のためのフォーム -->
+      <form class="form-inline" id="form">
+        <div class="form-group">
+          <label class="name_label" for="msgForm">部屋名を入力してください</label>
+          <input type="text" class="form-control" id="room_name">
+        </div>
+        <button type="submit" class="btn btn-primary" id="send_button">決定</button>
+      </form>
+
+    </div>
+
+    <script type="text/javascript">
+    var syogi = io('http://localhost:2222/syogi');
+    var room = '';
+    var room_enter = false;
+
+    //****** 禁じ手判定 ******//
+
+    // ターン判定用の変数
+    var turn;
+
+    // 部屋一覧の検索
+    syogi.emit('client_to_server_room_list', "");
+
+    // 部屋一覧の表示
+    syogi.on('server_to_client_room_list', function(data) {
+      console.log(room_enter);
+      if (!room_enter) {
+        content_none("room_list");
+        content_none("error_mess");
+        if (data.room[0] != null) {
+          $.each(data.room, function(index, val) {
+            if (val.num < 2) {
+              $("#room_list").append("<p id=" + val.id + " class='well' name=" + val.num + ">" + val.room + "</p>");
+              $('#' + val.id).on('click', function() {
+                room = val.id;
+                // 入室処理
+                room_enter = true;
+                enter_room(val.id);
+              });
+            }
+          });
+        } else {
+          error_mess("部屋がありません");
+        }
+      }
+    });
+
+
+    // 部屋に入室する際の処理
+    function enter_room(id) {
+      content_none("room_list");  // 部屋一覧を消す
+      content_none("error_mess"); // errorメッセージを消す
+      $("#form").css('display', 'none');       // 入力フォームを消す
+
+      syogi.emit('client_to_server_join', {id:id});
+    }
+
+
+    // 部屋一覧の表示変更
+    syogi.on('server_to_client_room_num', function(data) {
+      //console.log(data.num);
+      if (room=='') {
+        content_none("error_mess");
+        if (data.num>=2) {
+          $("#" + data.id).remove();
+          if ($("#room_list").text() == '' && !room_enter) {
+            error_mess("まだ部屋がありません。");
+          }
+        } else {
+          $("#" + data.id).attr('name', data.num);
+        }
+      }
+    });
+
+
+    // 部屋作成時の処理
+    $("form").submit(function(e){
+      room = $("#room_name").val();
+      $("#room_name").val('');
+      room_enter = true;
+      syogi.emit("client_to_server_add_room", {room : room});
+
+      e.preventDefault();
+    });
+
+
+    // 作成した部屋への入室処理
+    syogi.on('server_to_client_add_room', function(data) {
+      room = data.id;
+      enter_room(room);
+    });
+
+
+    // メッセージの表示
+    function error_mess(text) {
+      $("#error_mess").append("<p class='alert alert-warning' role='alert'>" + text + "</p>");
+    }
+
+    // 要素の削除
+    function content_none(id) {
+      $("#" + id).text('');
+    }
+
+
+    // サーバからのターン情報を受け取る
+    syogi.on("server_to_client_turn", function(data) {
+
+      // 自分のターンが決まっていない場合
+      if (!turn) {
+        error_mess("対戦相手を待っています");
+        console.log("not_turn: " + data.turn);
+        turn = data.turn;
+      }
+      // ターンが決まっている場合、
+      else {
+        // 自分のターンと相手のターンが異なる場合
+        if (turn >= data.turn) {
+          console.log("turn>ene :" + data.turn);
+          turn = 1;
+          syogi.emit('client_to_server_turn', {room:room, turn:0});
+        }
+        // 自分のターンと相手のターンが同じ場合
+        else {
+          console.log("turn<ene :" + data.turn);
+          turn = 0;
+          syogi.emit('client_to_server_turn', {room:room, turn:1});
+        }
+      }
+    });
+
+
+    // ターン変更要求が来た場合
+    syogi.on('server_to_client_turn_change', function(data) {
+      turn = data.turn;
+    });
+
+
+    // ゲーム開始
+    syogi.on('server_to_client_start', function(data) {
+      content_none("error_mess");
+      init(turn);
+    });
+
+
+    function dis_turn() {
+      if(turn) {
+        $('#turn').html('あなたの番です');
+      } else {
+        $('#turn').html('相手の番です');
+      }
+    }
+
+    // 初期の盤面表示処理
+    function init(king) {
+      $("#board_area").css('display', 'block');
+      // 取ったコマ置くゾーン作成
+      create_table("enemy_table", "enemy_koma");
+      create_table("my_table", "my_koma");
+      dis_turn();
+
+      // 盤面の作成
+      var table_tag = $("<table id='board_table' />");
+      for (var y = 0; y < 9; y++) {
+        var tr_tag = $("<tr />");
+        for (var x = 0; x < 9; x++) {
+          // 相手の駒表示
+          if ((y==0 && x==0) || (y==0 && x==8)) {
+            tr_tag.append($("<td><img src='./img/koma/60x64/enemy_kyosya.png' name='kyosya' class='enemy'></td>"));
+          } else if ((y==0 && x==1) || (y==0 && x==7)) {
+            tr_tag.append($("<td><img src='./img/koma/60x64/enemy_keima.png' name='keima' class='enemy'></td>"));
+          }  else if ((y==0 && x==2) || (y==0 && x==6)) {
+            tr_tag.append($("<td><img src='./img/koma/60x64/enemy_ginsyo.png' name='ginsyo' class='enemy'></td>"));
+          } else if ((y==0 && x==3) || (y==0 && x==5)) {
+            tr_tag.append($("<td><img src='./img/koma/60x64/enemy_kinsyo.png' name='kinsyo' class='enemy'></td>"));
+          } else if(y==0 && x==4) {
+            if (king==0) {
+              tr_tag.append($("<td><img src='./img/koma/60x64/enemy_gyokusyo.png' name='gyokusyo' class='enemy'></td>"));
+            } else {
+              tr_tag.append($("<td><img src='./img/koma/60x64/enemy_ohsyo.png' name='ohsyo' class='enemy'></td>"));
+            }
+          } else if (y==1 && x==1) {
+            tr_tag.append($("<td><img src='./img/koma/60x64/enemy_hisya.png' name='hisya' class='enemy'></td>"));
+          } else if (y==1 && x==7) {
+            tr_tag.append($("<td><img src='./img/koma/60x64/enemy_kakugyo.png' name='kakugyo' class='enemy'></td>"));
+          } else if (y==2) {
+            tr_tag.append($("<td><img src='./img/koma/60x64/enemy_huhyo.png' name='huhyo' class='enemy'></td>"));
+          }
+          // 自分側の駒表示
+          else if (y==6) {
+            tr_tag.append($("<td><img src='./img/koma/60x64/huhyo.png' name='huhyo' class='my'></td>"));
+          } else if (y==7 && x==1) {
+            tr_tag.append($("<td><img src='./img/koma/60x64/kakugyo.png' name='kakugyo' class='my'></td>"));
+          } else if (y==7 && x==7) {
+            tr_tag.append($("<td><img src='./img/koma/60x64/hisya.png' name='hisya' class='my'></td>"));
+          } else if ((y==8 && x==0) || (y==8 && x==8)) {
+            tr_tag.append($("<td><img src='./img/koma/60x64/kyosya.png' name='kyosya' class='my'></td>"));
+          } else if ((y==8 && x==1) || (y==8 && x==7)) {
+            tr_tag.append($("<td><img src='./img/koma/60x64/keima.png' name='keima' class='my'></td>"));
+          } else if ((y==8 && x==2) || (y==8 && x==6)) {
+            tr_tag.append($("<td><img src='./img/koma/60x64/ginsyo.png' name='ginsyo' class='my'></td>"));
+          } else if ((y==8 && x==3) || (y==8 && x==5)) {
+            tr_tag.append($("<td><img src='./img/koma/60x64/kinsyo.png' name='kinsyo' class='my'></td>"));
+          } else if(y==8 && x==4) {
+            if (king==0) {
+              tr_tag.append($("<td><img src='./img/koma/60x64/ohsyo.png' name='ohsyo' class='my'></td>"));
+            } else {
+              tr_tag.append($("<td><img src='./img/koma/60x64/gyokusyo.png' name='gyokusyo' class='my'></td>"));
+            }
+          } else {
+            tr_tag.append($("<td />"));
+          }
+          table_tag.append(tr_tag);
+        }
+      }
+      $("#board").append(table_tag);
+
+      // 自分の駒にクリックイベントを追加
+      add_event();
+    }
+
+
+    // 取ったコマを置くゾーン作成
+    function create_table(id, place_id) {
+      var table_tag = $("<table id='" + id + "' />");
+      var tr_tag = $("<tr />");
+      for (var i = 0; i < 8; i++ ) {
+        tr_tag.append($("<td />"));
+      }
+      table_tag.append(tr_tag);
+      $("#" + place_id).append(table_tag);
+    }
+
+
+    // クリックイベントを追加する駒の取得
+    function add_event() {
+      var tr = $("#board_table tr");
+      for (var y = 6; y < 9; y++) {
+        for (var x = 0; x < 9; x++) {
+          var cells = tr.eq(y).children();
+          // セル内に要素がある場合に処理を追加
+          if (cells.eq(x).children().length) {
+            //var id = cells.eq(x).children().attr("id");
+            var name = cells.eq(x).children().attr("name");
+            // 取得した駒にクリックイベントを追加
+            koma_add(x, y, cells.eq(x).children(), name);
+          }
+        }
+      }
+    }
+
+
+    // 引数に渡されたテーブルを初期化する
+    function clean_board(tr) {
+      // 背景色を元に戻す
+      $('td').css('background-color', '');
+      for (var i = 0; i < 9; i++) {
+        var cells = tr.eq(i).children();
+        for (var j = 0; j < 9; j++) {
+          $(cells.eq(j)).off('click');
+        }
+      }
+    }
+
+
+    // クリックイベントを追加するための関数
+    function koma_add(x, y, koma, name) {
+      $(koma).on('click', function() {
+        // 自分のターンのみ起動
+        console.log(turn);
+        if (turn) {
+          var tr = $("#board_table tr");
+          // 盤面セルのクリックイベント削除
+          clean_board(tr);
+          var cells = tr.eq(y).children();
+          $(cells.eq(x)).css('background-color','#ffa500');
+          // 選択した駒の移動可能先を表示ためサーバに情報を送信
+          syogi.emit('client_to_server_koma_select', { x:x, y:y, koma:koma, name:name });
+        }
+      });
+    }
+
+
+    // 駒の移動先を表示
+    syogi.on("server_to_client_koma_select", function(data){
+      var x = data.x;
+      var y = data.y;
+      var koma = data.koma;
+      var name = data.name;
+      var json = data.json;
+      var tr = $("#board_table tr");
+      // 移動できない場所判定用の変数
+      var no_move = 0;
+
+      // サーバから情報分ループ
+      $.each(json, function(i, value) {
+        // 移動先（to_x:横方向、to_y:縦方向）
+        var to_x = x + value.x;
+        var to_y = y + value.y;
+
+        // 盤外に出ないようにする
+        if ( value.type != no_move && to_x>-1 && to_x<9 && to_y>-1 && to_y<9 ) {
+          var tr = $("#board_table tr");
+          var cells = tr.eq(to_y).children();
+
+          // 自分の駒のある場所を避ける
+          var cell_class = cells.eq(to_x).children().attr("class");
+          if (!cells.eq(to_x).children().length || cell_class != "my" ) {
+            $(cells.eq(to_x)).css('background-color','#ffa500');
+
+            // 移動先にクリックイベントを追加
+            move_add(x, y, koma, name, to_x, to_y);
+          }
+          // 自分の駒のある置く側に移動できなくする処理
+          if (cell_class && value.type) {
+            no_move = value.type;
+          }
+        }
+      });
+    });
+
+
+    // 移動先クリック時の処理
+    function move_add(x, y, koma, name, to_x, to_y) {
+      var tr = $("#board_table tr");
+      var to_cells = tr.eq(to_y).children();
+      var dest = to_cells.eq(to_x);
+
+      // 移動先にクリックイベント追加
+      $(dest).on('click', function() {
+        if ( to_y < 3 && ( name == "huhyo" || name == "kyosya" || name == "keima" || name == "ginsyo" || name == "hisya" || name == "kakugyo" )) {
+          nari_dicision(x, y, koma, name, to_x, to_y, dest, tr);
+        } else {
+          var nari = false;
+          // 移動先を相手に送信
+          syogi.emit('client_to_server_move_info', { x:x, y:y, koma:koma, name:name, to_x:to_x, to_y:to_y , nari:nari, room:room});
+          // 移動処理
+          move_func(x, y, koma, name, to_x, to_y, dest, tr, nari);
+        }
+      });
+    }
+
+
+    function nari_dicision(x, y, koma, name, to_x, to_y, dest, tr) {
+      $('#mess').css('display', 'block');
+      $('#back').css('display', 'block');
+
+      $('#yes_button').on('click', function() {
+        // 成るかどうかの確認
+        var nari = true;
+        $('#mess').css('display', 'none');
+        $('#back').css('display', 'none');
+
+        //console.log(nari)
+        // 移動先を相手に送信
+        syogi.emit('client_to_server_move_info', { x:x, y:y, koma:koma, name:name, to_x:to_x, to_y:to_y , nari:nari, room:room});
+        // 移動処理
+        move_func(x, y, koma, name, to_x, to_y, dest, tr, nari);
+      });
+
+      $('#no_button').on('click', function() {
+        // 成るかどうかの確認
+        var nari = false;
+        $('#mess').css('display', 'none');
+        $('#back').css('display', 'none');
+        // 移動先を相手に送信
+        //console.log(nari)
+        syogi.emit('client_to_server_move_info', { x:x, y:y, koma:koma, name:name, to_x:to_x, to_y:to_y , nari:nari, room:room});
+        // 移動処理
+        move_func(x, y, koma, name, to_x, to_y, dest, tr, nari);
+      });
+
+    }
+
+
+    // 相手の駒が動いた場合の処理
+    syogi.on("server_to_client_move_info", function(data){
+      var x = 8 - data.data.x;
+      var y = 8 - data.data.y;
+      var to_x = 8 - data.data.to_x;
+      var to_y = 8 - data.data.to_y;
+      var koma = data.data.koma;
+      var name = data.data.name;
+      var nari = data.data.nari;
+      //turn = 0;
+
+      var tr = $("#board_table tr");
+      var to_cells = tr.eq(to_y).children();
+      var dest = to_cells.eq(to_x);
+      move_func(x, y, koma, name, to_x, to_y, dest, tr, nari);
+
+    });
+
+
+    // 移動処理
+    function move_func(x, y, koma, name, to_x, to_y, dest, tr, nari) {
+      //******* 移動先の駒を消す ******//
+      if (dest.children().length) {
+        var get_koma = dest.children().attr("name");
+        $(dest).empty();
+        koma_check(get_koma);
+      }
+
+      var cells = tr.eq(y).children();
+      var from = cells.eq(x);
+      var move;
+
+      if (to_y < 3 && turn && nari ) {
+        switch (name) {
+          case "huhyo":
+          move = "<img src='./img/koma/60x64/tokin.png' name='tokin' class='my'>";
+          name = "tokin";
+          break;
+          case "kyosya":
+          move = "<img src='./img/koma/60x64/narikyo.png' name='narikyo' class='my'>";
+          name = "narikyo";
+          break;
+          case "keima":
+          move = "<img src='./img/koma/60x64/narikei.png' name='narikei' class='my'>";
+          name = "narikei";
+          break;
+          case "ginsyo":
+          move = "<img src='./img/koma/60x64/narigin.png' name='narigin' class='my'>";
+          name = "narigin";
+          break;
+          case "hisya":
+          move = "<img src='./img/koma/60x64/ryuoh.png' name='ryuoh' class='my'>";
+          name = "ryuoh";
+          break;
+          case "kakugyo":
+          move = "<img src='./img/koma/60x64/ryuuma.png' name='ryuuma' class='my'>";
+          name = "ryuuma";
+          break;
+          default:
+          move = from.html();
+        }
+      } else if ( to_y > 5 && !turn && nari ) {
+        switch (name) {
+          case "huhyo":
+          move = "<img src='./img/koma/60x64/enemy_tokin.png' name='tokin' class='enemy'>";
+          name = "tokin";
+          break;
+          case "kyosya":
+          move = "<img src='./img/koma/60x64/enemy_narikyo.png' name='narikyo' class='enemy'>";
+          name = "narikyo";
+          break;
+          case "keima":
+          move = "<img src='./img/koma/60x64/enemy_narikei.png' name='narikei' class='enemy'>";
+          name = "narikei";
+          break;
+          case "ginsyo":
+          move = "<img src='./img/koma/60x64/enemy_narigin.png' name='narigin' class='enemy'>";
+          name = "narigin";
+          break;
+          case "hisya":
+          move = "<img src='./img/koma/60x64/enemy_ryuoh.png' name='ryuoh' class='enemy'>";
+          name = "ryuoh";
+          break;
+          case "kakugyo":
+          move = "<img src='./img/koma/60x64/enemy_ryuuma.png' name='ryuuma' class='enemy'>";
+          name = "ryuuma";
+          break;
+          default:
+          move = from.html();
+        }
+      } else {
+        move = from.html();
+      }
+      //console.log(move);
+      $('td').css('background-color', '');
+      $(from).empty();
+      $(dest).append(move);
+      $('#koma_sound').get(0).play();
+
+      //console.log(turn);
+      if (turn) {
+        turn = 0;
+        $('#yes_button').off('click');
+        $('#no_button').off('click');
+        $(dest).off('click');
+        $(dest.children()).off('click');
+        koma_add(to_x, to_y, dest.children(), name);
+      } else {
+        turn = 1;
+      }
+      console.log(turn);
+      //****** 王を取られた時の処理 ******//
+      if (get_koma == "ohsyo" || get_koma == "gyokusyo") {
+        game_end();
+      }
+      dis_turn();
+    }
+
+
+    function koma_check(name) {
+      switch (name) {
+        case "tokin":
+        name = "huhyo";
+        break;
+        case "narikyo":
+        name = "kyosya";
+        break;
+        case "narikei":
+        name = "keima";
+        break;
+        case "narigin":
+        name = "ginsyo";
+        break;
+        case "ryuoh":
+        name = "hisya";
+        break;
+        case "ryuuma":
+        name = "kakugyo";
+        break;
+      }
+      koma_get(name);
+    }
+
+    // 取得した駒の処理
+    function koma_get(name) {
+      // 自分のターンの場合（自分がとった場合）
+      if (turn == "1") {
+        // 自分の取ったコマゾーンを取得
+        var tr = $("#my_table tr");
+
+        // ループを回して、コマゾーンの空いている位置に取ったコマを配置
+        for (var i = 0; i < 8; i++) {
+          var td = tr.eq(0).children();
+          if (!td.eq(i).children().length) {
+            td.eq(i).append("<img src='./img/koma/60x64/" + name + ".png' name='" + name + "' class='my'>");
+            // 取ったコマにクリックイベントを追加
+            get_click(td, i, name);
+            break;
+          }
+        }
+      } else { // 相手のターンの場合
+        // 相手の取ったコマゾーンを取得
+        var tr = $("#enemy_table tr");
+
+        // ループを回して、コマゾーンの空いている位置に取ったコマを配置
+        for (var i = 0; i < 8; i++) {
+          var td = tr.eq(0).children();
+          if (!td.eq(i).children().length) {
+            td.eq(i).append("<img src='./img/koma/60x64/enemy_" + name + ".png' name='" + name + "' class='enemy'>");
+            break;
+          }
+        }
+      }
+    }
+
+
+    // 取得した駒にクリックイベント追加
+    function get_click(td, i, name) {
+      $(td.eq(i).children()).on('click', function() {
+        // 自分のターンのみクリックイベントを起動
+        if (turn) {
+          // 盤上のクリックイベントを消去
+          clean_board($("#board_table tr"));
+
+          $(td.eq(i)).css('background-color','#ffa500');
+
+          // 駒のおける場所へのイベントを追加
+          put_koma(td, i, name);
+        }
+      });
+    }
+
+
+    // 駒のおける場所へのイベント追加
+    function put_koma(td, i, name) {
+      var tr = $("#board_table tr");
+
+      // 盤上の空いているいる位置を置ける場所に設定
+      for (var y = 0; y < 9; y++ ) {
+        var cells = tr.eq(y).children();
+        for (var x = 0; x < 9; x++ ) {
+          if (!cells.eq(x).children().length) {
+            var dest = cells.eq(x);
+            //console.log(x);
+            $(dest).css('background-color','#ffa500');
+            // 置ける場所にクリックイベントを追加
+            put_click(x, y, i, td.eq(i), dest, name);
+          }
+        }
+      }
+    }
+
+
+    // 盤へのクリックイベントの追加
+    function put_click(x, y, i, from, dest, name) {
+      $(dest).on('click', function() {
+        // 相手に置く駒の情報を送信
+        syogi.emit('client_to_server_put_info', { x:x, y:y, i:i, name:name, room:room});
+        // 駒の移動処理
+        put_move(x, y, from, dest, name);
+      });
+    }
+
+
+    // 相手が駒を置いた場合の処理
+    syogi.on("server_to_client_put_info", function(data){
+      var x = 8 - data.data.x;
+      var y = 8 - data.data.y;
+      var i = data.data.i;
+      var name = data.data.name;
+
+      var from_tr = $("#enemy_table tr").eq(0).children();
+      var from_td = from_tr.eq(i);
+
+      var tr = $("#board_table tr").eq(y).children();
+      var dest = tr.eq(x);
+
+      // 駒の移動処理
+      put_move(x, y, from_td, dest, name);
+    });
+
+
+    // 置く駒の移動処理
+    function put_move(x, y, from, dest, name) {
+      //console.log(from.html());
+      var move = from.html();
+      console.log(dest.html());
+      $('td').css('background-color', '');
+      $(from).empty();
+      $(dest).append(move);
+      $('#koma_sound').get(0).play();
+
+      // 自分のターンの場合
+      if (turn) {
+        // ターン変更
+        turn = 0;
+        // 盤上・置いたコマのクリックイベントを削除
+        $('td').off('click');
+        $(dest.children()).off('click');
+        // 置いたコマにクリックイベントを追加
+        koma_add(x, y, dest.children(), name);
+      }
+      // 相手のターンの場合、ターンを変更
+      else {
+        turn = 1;
+      }
+      dis_turn();
+    }
+
+
+    // ゲーム終了時の処理
+    function game_end() {
+      var message;
+      if (turn == "disconnect") {
+        message = "相手との通信が途切れました";
+      } else if (turn =="server") {
+        message = "サーバーとの通信が途切れました";
+      } else if (turn) {
+        message = "あなたの負けです";
+      } else {
+        message = "あなたの勝ちです";
+      }
+
+      $('#end_mess').css('display', 'block');
+      $('#end_mess').append(message);
+      $('#end_mess').append("<button type='button' id='return_button'>OK</button>");
+
+      $('#back').css('display', 'block');
+
+      $('#return_button').on('click', function() {
+        // 各種変数・表示の初期化
+        syogi.emit('client_to_server_exit_room', room);
+        room = '';
+        room_enter = false;
+        turn = '';
+        content_none("turn");
+        $('#end_mess').css('display', 'none');
+        content_none("end_mess");
+        $('#back').css('display', 'none');
+        content_none("enemy_koma");
+        $('#board_area').css('display', 'none');
+        content_none("board");
+        content_none("my_koma");
+        $("#form").css('display', 'block');
+
+        syogi.emit('client_to_server_room_list', "");
+      });
+    }
+
+
+    // 相手の接続が途切れた時の処理
+    syogi.on('server_to_client_disconnect', function(data) {
+      turn = "disconnect";
+      game_end();
+    });
+
+
+    // サーバーとの通信が途切れた場合の処理
+    socket.on('disconnect', function(data) {
+      console.log('disconnect');
+      turn = "server";
+      game_end();
+    });
+
+    </script>
+  </body>
+  </html>
